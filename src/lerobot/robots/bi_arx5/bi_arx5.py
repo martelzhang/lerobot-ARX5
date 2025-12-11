@@ -173,10 +173,30 @@ class BiARX5(Robot):
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
-        return {
-            cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3)
-            for cam in self.cameras
+        """Describe visual outputs (H, W, C) for cameras that actually emit images.
+
+        Xense tactile sensors can be configured to output only force/resultant data
+        (no DIFFERENCE/RECTIFY/DEPTH frames). In that case we must *not* register
+        them as image features, otherwise the dataset writer will expect an
+        observation key like ``right_tactile_0`` that is never produced, leading
+        to KeyError during recording and silently dropping tactile frames.
+        """
+
+        image_outputs = {
+            XenseOutputType.RECTIFY,
+            XenseOutputType.DIFFERENCE,
+            XenseOutputType.DEPTH,
         }
+
+        camera_feats: dict[str, tuple] = {}
+        for cam_name, cam_cfg in self.config.cameras.items():
+            if isinstance(cam_cfg, XenseCameraConfig):
+                # Only register Xense cameras that deliver image-like outputs
+                if not any(ot in image_outputs for ot in cam_cfg.output_types):
+                    continue
+            camera_feats[cam_name] = (cam_cfg.height, cam_cfg.width, 3)
+
+        return camera_feats
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
@@ -393,6 +413,14 @@ class BiARX5(Robot):
                         )
                     elif ot == XenseOutputType.DEPTH:
                         obs_dict[f"{cam_key}.depth"] = value
+                    else:
+                        # Guardrail: surface unhandled tactile modalities instead of silently dropping them
+                        logger.debug(
+                            "Unhandled Xense output type %s for camera %s (value shape=%s)",
+                            ot,
+                            cam_key,
+                            getattr(value, "shape", None),
+                        )
                 camera_times[cam_key] = dt_ms
                 continue
 
